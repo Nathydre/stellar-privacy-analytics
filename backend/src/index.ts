@@ -16,8 +16,7 @@ import { queryRoutes } from './routes/query';
 import ipfsRoutes from './routes/ipfs';
 import hsmRoutes from './routes/hsm';
 import { mpcRoutes } from './routes/mpc';
-import { privacyBudgetRoutes } from './routes/privacy-budget';
-main
+
 import { errorHandler } from './middleware/errorHandler';
 import { requestLogger } from './middleware/requestLogger';
 import { privacyMiddleware } from './middleware/privacy';
