@@ -88,15 +88,6 @@ pub struct PrivacyLevel {
     pub max_data_points: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[contracttype]
-pub enum PrivacyLevelName {
-    Minimal,
-    Standard,
-    High,
-    Maximum,
-}
-
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[contracterror]
 #[repr(u32)]
@@ -469,7 +460,14 @@ impl StellarAnalytics {
             return Err(StellarAnalyticsError::BudgetExceeded);
         }
 
-        Self::set_user_privacy_budget(env, user, current_budget + amount);
+        Self::set_user_privacy_budget(env.clone(), user.clone(), current_budget + amount);
+
+        // Emit event
+        env.events().publish(
+            (symbol!("budget_added"), user),
+            (amount, current_budget + amount),
+        );
+
         Ok(())
     }
 
@@ -621,7 +619,7 @@ impl StellarAnalytics {
         let dataset = IPFSDataset {
             cid: cid.clone(),
             dataset_hash,
-            uploader,
+            uploader: uploader.clone(),
             timestamp: env.ledger().timestamp(),
             size_bytes,
             encrypted,
@@ -654,8 +652,14 @@ impl StellarAnalytics {
             .get(&symbol!("data_availability"))
             .unwrap_or_else(|| Map::new(&env));
 
-        availability_map.set(cid, availability);
+        availability_map.set(cid.clone(), availability);
         env.storage().instance().set(&symbol!("data_availability"), &availability_map);
+
+        // Emit event
+        env.events().publish(
+            (symbol!("dataset_registered"), uploader),
+            (cid, dataset_hash, size_bytes),
+        );
 
         Ok(())
     }
@@ -713,8 +717,14 @@ impl StellarAnalytics {
         availability.pin_count = pin_count;
         availability.filecoin_deal_id = filecoin_deal_id;
 
-        availability_map.set(cid, availability);
+        availability_map.set(cid.clone(), availability);
         env.storage().instance().set(&symbol!("data_availability"), &availability_map);
+
+        // Emit event
+        env.events().publish(
+            (symbol!("availability_updated"), cid),
+            (available, pin_count),
+        );
 
         Ok(())
     }
@@ -743,8 +753,14 @@ impl StellarAnalytics {
             .ok_or(StellarAnalyticsError::DatasetNotFound)?;
 
         dataset.pinned = true;
-        datasets.set(cid, dataset);
+        datasets.set(cid.clone(), dataset);
         env.storage().instance().set(&symbol!("ipfs_datasets"), &datasets);
+
+        // Emit event
+        env.events().publish(
+            (symbol!("dataset_pinned"), cid),
+            (),
+        );
 
         Ok(())
     }
@@ -791,7 +807,7 @@ impl StellarAnalytics {
         }
 
         // Get old dataset to inherit properties
-        let datasets: Map<String, IPFSDataset> = env
+        let mut datasets: Map<String, IPFSDataset> = env
             .storage()
             .instance()
             .get(&symbol!("ipfs_datasets"))
@@ -805,7 +821,7 @@ impl StellarAnalytics {
 
         let new_dataset = IPFSDataset {
             cid: new_cid.clone(),
-            dataset_hash: new_dataset_hash,
+            dataset_hash: new_dataset_hash.clone(),
             uploader,
             timestamp: env.ledger().timestamp(),
             size_bytes,
@@ -815,9 +831,8 @@ impl StellarAnalytics {
             decryption_key_hash,
         };
 
-        let mut datasets_mut = datasets;
-        datasets_mut.set(new_cid.clone(), new_dataset);
-        env.storage().instance().set(&symbol!("ipfs_datasets"), &datasets_mut);
+        datasets.set(new_cid.clone(), new_dataset);
+        env.storage().instance().set(&symbol!("ipfs_datasets"), &datasets);
 
         // Initialize data availability for new version
         let availability = DataAvailability {
@@ -834,8 +849,14 @@ impl StellarAnalytics {
             .get(&symbol!("data_availability"))
             .unwrap_or_else(|| Map::new(&env));
 
-        availability_map.set(new_cid, availability);
+        availability_map.set(new_cid.clone(), availability);
         env.storage().instance().set(&symbol!("data_availability"), &availability_map);
+
+        // Emit event
+        env.events().publish(
+            (symbol!("version_created"), old_cid),
+            (new_cid, new_dataset_hash, new_version),
+        );
 
         Ok(())
     }
