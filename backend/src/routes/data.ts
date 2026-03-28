@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { asyncHandler } from '../middleware/errorHandler';
+import { auditMiddleware } from '../utils/audit';
 
 const router = Router();
 
 // Upload data
-router.post('/upload', asyncHandler(async (req, res) => {
+router.post('/upload', auditMiddleware('upload_dataset', 'data_modification'), asyncHandler(async (req, res) => {
   res.status(201).json({
     datasetId: 'temp-dataset-id',
     status: 'uploaded',
@@ -13,7 +14,7 @@ router.post('/upload', asyncHandler(async (req, res) => {
 }));
 
 // Get datasets
-router.get('/', asyncHandler(async (req, res) => {
+router.get('/', auditMiddleware('list_datasets', 'data_access'), asyncHandler(async (req, res) => {
   res.json({
     datasets: [],
     message: 'Datasets retrieved successfully'
