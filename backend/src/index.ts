@@ -42,9 +42,6 @@ const server = createServer(app);
 // Initialize WebSocket for upload progress
 const uploadSocket = initializeUploadSocket(server);
 
-// Initialize federated learning WebSocket
-federatedLearning.setSocketIO(uploadSocket);
-
 
 // Security middleware
 app.use(helmet({
