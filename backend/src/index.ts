@@ -12,6 +12,7 @@ import { authRoutes } from './routes/auth';
 import { analyticsRoutes } from './routes/analytics';
 import { dataRoutes, initializeUploadSocket } from './routes/data';
 import { privacyRoutes } from './routes/privacy';
+import { mlRoutes, federatedLearning } from './routes/ml';
 import { errorHandler } from './middleware/errorHandler';
 import { requestLogger } from './middleware/requestLogger';
 import { privacyMiddleware } from './middleware/privacy';
@@ -26,6 +27,9 @@ const server = createServer(app);
 
 // Initialize WebSocket for upload progress
 const uploadSocket = initializeUploadSocket(server);
+
+// Initialize federated learning WebSocket
+federatedLearning.setSocketIO(uploadSocket);
 
 // Security middleware
 app.use(helmet({
@@ -86,6 +90,7 @@ apiRouter.use('/auth', authRoutes);
 apiRouter.use('/analytics', analyticsRoutes);
 apiRouter.use('/data', dataRoutes);
 apiRouter.use('/privacy', privacyRoutes);
+apiRouter.use('/ml', mlRoutes);
 
 app.use('/api/v1', apiRouter);
 
