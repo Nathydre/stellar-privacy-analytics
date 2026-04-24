@@ -3,9 +3,14 @@ import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
 import morgan from 'morgan';
-import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import { createServer } from 'http';
+
+// Import rate limiting
+import { initializeRedis, getRedisClient } from './config/redis';
+import { createRateLimiter, createPQLRateLimiter, createAdminRateLimiter } from './middleware/rateLimiter';
+import { createEnhancedRateLimiter } from './middleware/enhancedRateLimiter';
+import { rateLimitMonitor } from './monitoring/rateLimitMonitor';
 
 // Import routes and middleware
 import { authRoutes } from './routes/auth';
@@ -63,17 +68,32 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Privacy-Level'],
 }));
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000'), // 15 minutes
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100'),
-  message: {
-    error: 'Too many requests from this IP, please try again later.',
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-app.use(limiter);
+// Rate limiting - using enhanced distributed rate limiter
+let rateLimiter: any;
+let pqlRateLimiter: any;
+let adminRateLimiter: any;
+let enhancedRateLimiter: any;
+
+// Initialize rate limiters after Redis is connected
+async function initializeRateLimiters() {
+  const redisClient = getRedisClient();
+  
+  // Create standard rate limiters
+  rateLimiter = createRateLimiter(redisClient);
+  pqlRateLimiter = createPQLRateLimiter(redisClient);
+  adminRateLimiter = createAdminRateLimiter(redisClient);
+  
+  // Create enhanced rate limiter with advanced features
+  enhancedRateLimiter = createEnhancedRateLimiter(redisClient);
+  
+  // Register rate limiters with monitoring
+  rateLimitMonitor.registerRateLimiter('standard', rateLimiter);
+  rateLimitMonitor.registerRateLimiter('enhanced', enhancedRateLimiter);
+  rateLimitMonitor.registerRateLimiter('pql', pqlRateLimiter);
+  rateLimitMonitor.registerRateLimiter('admin', adminRateLimiter);
+  
+  logger.info('Enhanced rate limiters initialized with Redis and monitoring');
+}
 
 // General middleware
 app.use(compression());
@@ -86,29 +106,122 @@ app.use(requestLogger);
 app.use(metricsMiddleware);
 app.use(privacyMiddleware);
 
+// Apply enhanced rate limiting after authentication middleware
+app.use('/api/v1', async (req, res, next) => {
+  if (enhancedRateLimiter) {
+    return enhancedRateLimiter.enhancedRateLimit({
+      enableCollisionDetection: true,
+      enableBurstProtection: true,
+      enableAdaptiveLimiting: true,
+      enableAlerting: true,
+      collisionThreshold: 10,
+      burstLimit: 200,
+      burstWindowMs: 60000,
+      alertThreshold: 0.15
+    })(req, res, next);
+  }
+  next();
+});
+
+// Rate limiting monitoring endpoint
+app.get('/api/v1/admin/rate-limit/metrics', (req, res) => {
+  if (process.env.NODE_ENV === 'production' && !req.user?.isAdmin) {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  
+  const metrics = rateLimitMonitor.getMetricsSummary();
+  res.json({
+    metrics,
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+// Rate limiting configuration endpoint
+app.get('/api/v1/admin/rate-limit/config', (req, res) => {
+  if (process.env.NODE_ENV === 'production' && !req.user?.isAdmin) {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  
+  res.json({
+    config: {
+      standard: {
+        windowMs: 15 * 60 * 1000,
+        basic: { maxRequests: 100 },
+        premium: { maxRequests: 500 },
+        enterprise: { maxRequests: 2000 }
+      },
+      enhanced: {
+        collisionDetection: true,
+        burstProtection: true,
+        adaptiveLimiting: true,
+        alerting: true
+      },
+      monitoring: {
+        enabled: true,
+        interval: 30000,
+        retention: 24 * 60 * 60 * 1000
+      }
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
+  const metrics = rateLimitMonitor.getMetricsSummary();
+  
   res.status(200).json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
     version: process.env.npm_package_version || '1.0.0',
     environment: process.env.NODE_ENV || 'development',
+    rateLimiting: {
+      enabled: true,
+      type: 'enhanced',
+      metrics: {
+        totalRequests: metrics.current?.totalRequests || 0,
+        blockedRequests: metrics.current?.blockedRequests || 0,
+        blockRate: metrics.current ? (metrics.current.blockedRequests / Math.max(1, metrics.current.totalRequests)) : 0
+      }
+    }
   });
 });
 
 // API routes
 const apiRouter = express.Router();
-apiRouter.use('/auth', authRoutes);
-apiRouter.use('/analytics', analyticsRoutes);
+
+// Apply specialized rate limiting to different route groups
+apiRouter.use('/auth', authRoutes); // Enhanced rate limiting applied above
+
+// Analytics and Query endpoints - Enhanced PQL rate limiting with stricter controls
+apiRouter.use('/analytics', enhancedRateLimiter ? enhancedRateLimiter.enhancedRateLimit({
+  enableCollisionDetection: true,
+  enableBurstProtection: true,
+  enableAdaptiveLimiting: true,
+  maxRequests: 50, // Stricter limit for analytics
+  collisionThreshold: 5,
+  burstLimit: 100,
+  alertThreshold: 0.1
+}) : (req: any, res: any, next: any) => next(), analyticsRoutes);
+
+apiRouter.use('/query', enhancedRateLimiter ? enhancedRateLimiter.enhancedRateLimit({
+  enableCollisionDetection: true,
+  enableBurstProtection: true,
+  enableAdaptiveLimiting: true,
+  maxRequests: 30, // Very strict for queries
+  collisionThreshold: 3,
+  burstLimit: 50,
+  alertThreshold: 0.08
+}) : (req: any, res: any, next: any) => next(), queryRoutes);
+
 apiRouter.use('/data', dataRoutes);
 apiRouter.use('/privacy', privacyRoutes);
 apiRouter.use('/privacy/budget', privacyBudgetRoutes);
-apiRouter.use('/query', queryRoutes);
 apiRouter.use('/ipfs', ipfsRoutes);
 apiRouter.use('/hsm', hsmRoutes);
 apiRouter.use('/mpc', mpcRoutes);
-apiRouter.use('/audit', auditRoutes);
-apiRouter.use('/gateway', gatewayRoutes);
+
 
 app.use('/api/v1', apiRouter);
 
@@ -157,9 +270,15 @@ process.on('uncaughtException', (error) => {
 const PORT = process.env.API_PORT || 3001;
 const HOST = process.env.API_HOST || 'localhost';
 
-// Initialize HSM and Stellar Watcher integration before starting server
+// Initialize services before starting server
 async function initializeServices() {
   try {
+    // Initialize Redis first
+    await initializeRedis();
+    
+    // Initialize rate limiters
+    await initializeRateLimiters();
+    
     const hsmIntegration = getHSMIntegration({
       autoInitializeMasterKey: true,
       enableAutoRecovery: false,
